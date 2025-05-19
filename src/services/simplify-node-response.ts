@@ -2,6 +2,7 @@ import { type SimplifiedLayout, buildSimplifiedLayout } from "~/transformers/lay
 import type {
   GetFileNodesResponse,
   Node as FigmaDocumentNode,
+  DocumentNode,
   Paint,
   Vector,
   GetFileResponse,
@@ -16,6 +17,8 @@ import {
 } from "~/utils/common.js";
 import { buildSimplifiedStrokes, type SimplifiedStroke } from "~/transformers/style.js";
 import { buildSimplifiedEffects, type SimplifiedEffects } from "~/transformers/effects.js";
+import { Logger } from "./../utils/logger.js";
+
 /**
  * TODO ITEMS
  *
@@ -37,6 +40,16 @@ export type TextStyle = Partial<{
   textCase: string;
   textAlignHorizontal: string;
   textAlignVertical: string;
+}>;
+export type SimplifiedStyle  = Partial<{
+  key: string;
+  name: string;
+  styleType: string;
+}>;
+export type SimplifiedComponent = Partial<{
+  key: string;
+  name: string;
+  componentSetId: string;
 }>;
 export type StrokeWeights = {
   top: number;
@@ -60,6 +73,9 @@ export interface SimplifiedDesign {
   thumbnailUrl: string;
   nodes: SimplifiedNode[];
   globalVars: GlobalVars;
+  components: Record<string, SimplifiedComponent>;
+  componentSets: Record<string, SimplifiedComponent>;
+  styles: Record<string, SimplifiedStyle>;
 }
 
 export interface SimplifiedNode {
@@ -84,6 +100,10 @@ export interface SimplifiedNode {
   // for rect-specific strokes, etc.
   // children
   children?: SimplifiedNode[];
+  // component
+  componentId?: string;
+  componentSetId?: string;
+  componentStyles?: { [key: string]: string };
 }
 
 export interface BoundingBox {
@@ -118,14 +138,88 @@ export interface ColorValue {
 }
 
 // ---------------------- PARSING ----------------------
+/**
+ * Process styles, components, and component sets from Figma response data
+ */
+function processDesignSystem(
+  source: any,
+  styles: Record<string, SimplifiedStyle>,
+  components: Record<string, SimplifiedComponent>,
+  componentSets: Record<string, SimplifiedComponent>
+): void {
+  // Process styles
+  if ('styles' in source) {
+    for (const styleId in source.styles) {
+      const style = source.styles[styleId];
+      styles[styleId] = {
+        key: style.key,
+        name: style.name,
+        styleType: style.styleType,
+      };
+    }
+    
+    // Only log Document styles when processing the document
+    if ('document' in source) {
+      Logger.log('Document styles:', source.styles);
+    }
+  }
+  
+  // Process components
+  if ('components' in source) {
+    for (const componentId in source.components) {
+      const component = source.components[componentId];
+      components[componentId] = {
+        key: component.key,
+        name: component.name,
+        componentSetId: component.componentSetId,
+      };
+    }
+    
+    // Only log Document components when processing the document
+    if ('document' in source) {
+      Logger.log('Document components:', source.components);
+    }
+  }
+  
+  // Process component sets
+  if ('componentSets' in source) {
+    for (const componentSetId in source.componentSets) {
+      const componentSet = source.componentSets[componentSetId];
+      componentSets[componentSetId] = {
+        key: componentSet.key,
+        name: componentSet.name,
+      };
+    }
+    
+    // Only log Document component sets when processing the document
+    if ('document' in source) {
+      Logger.log('Document componentSets:', source.componentSets);
+    }
+  }
+}
+
 export function parseFigmaResponse(data: GetFileResponse | GetFileNodesResponse): SimplifiedDesign {
   const { name, lastModified, thumbnailUrl } = data;
   let nodes: FigmaDocumentNode[];
+  let components: Record<string, SimplifiedComponent> = {};
+  let componentSets: Record<string, SimplifiedComponent> = {};
+  let styles: Record<string, SimplifiedStyle> = {};
+
   if ("document" in data) {
     nodes = Object.values(data.document.children);
   } else {
     nodes = Object.values(data.nodes).map((n) => n.document);
   }
+
+  if ("document" in data) {    
+    processDesignSystem(data, styles, components, componentSets);
+  } else if ("nodes" in data) {
+    for (const nodeId in data.nodes) {
+      const node = data.nodes[nodeId];
+      processDesignSystem(node, styles, components, componentSets);
+    }
+  }
+    
   let globalVars: GlobalVars = {
     styles: {},
   };
@@ -140,6 +234,9 @@ export function parseFigmaResponse(data: GetFileResponse | GetFileNodesResponse)
     thumbnailUrl: thumbnailUrl || "",
     nodes: simplifiedNodes,
     globalVars,
+    components,
+    componentSets,
+    styles,
   };
 }
 
@@ -276,6 +373,17 @@ function parseNode(
   // Convert VECTOR to IMAGE
   if (type === "VECTOR") {
     simplified.type = "IMAGE-SVG";
+  }
+  
+  if (hasValue("componentId", n)) {
+    simplified.componentId = n.componentId;
+  }
+  if (hasValue("componentSetId", n) && typeof n.componentSetId === "string") {
+    simplified.componentSetId = n.componentSetId;
+  }
+
+  if (hasValue("styles", n) && typeof n.styles === "object") {
+    simplified.componentStyles = n.styles as { [key: string]: string };
   }
 
   return removeEmptyKeys(simplified);
